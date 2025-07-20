@@ -300,8 +300,6 @@ class HealthcareConversationAgent:
         state["messages"].append(AIMessage(content=response.content))
         state["current_state"] = ConversationStates.VERIFICATION
 
-        response = interrupt(state)
-        
         return interrupt(state)
 
     
@@ -361,7 +359,7 @@ class HealthcareConversationAgent:
             # LLM is asking for more information
             state["messages"].append(response)
         
-        return state
+        return interrupt(state)
     
     async def handle_authenticated(self, state: ConversationState) -> ConversationState:
         """Handle main menu after successful verification"""
@@ -373,12 +371,13 @@ class HealthcareConversationAgent:
         The user is verified and can access appointment features. Based on their message,
         determine what they want to do and respond helpfully.
         
-        Available actions:
+        Respond only with one of the following available actions and only choose unsure if you truly are unsure:
         - View/list appointments
         - Confirm appointments  
         - Cancel appointments
-        
-        Be natural and conversational.
+        - Unsure
+
+        Only respond with one of the 4 listed actions
         """
         
         response = await self.llm.ainvoke([
@@ -386,18 +385,20 @@ class HealthcareConversationAgent:
             {"role": "user", "content": user_input}
         ])
         
-        state["messages"].append(response)
-        
         # Determine next action based on user intent
-        intent_lower = user_input.lower()
-        if any(word in intent_lower for word in ["list", "show", "view", "see", "appointments"]):
+        intent_lower = response.content.lower()
+        if any(word in intent_lower for word in ["list", "view"]):
             state["current_state"] = ConversationStates.LIST_APPOINTMENTS
-        elif any(word in intent_lower for word in ["confirm", "confirmation"]):
+        elif any(word in intent_lower for word in ["confirm"]):
             state["current_state"] = ConversationStates.CONFIRM_APPOINTMENT
             state["pending_action"] = "confirm"
-        elif any(word in intent_lower for word in ["cancel", "cancellation"]):
+        elif any(word in intent_lower for word in ["cancel"]):
             state["current_state"] = ConversationStates.CANCEL_APPOINTMENT  
             state["pending_action"] = "cancel"
+        elif any(word in intent_lower for word in ["unsure"]):
+            state["messages"].append(AIMessage(content="I'm not sure what you want to do. Please let me know if you want to view your appointments, confirm an appointment, or cancel an appointment."))
+            state["current_state"] = ConversationStates.AUTHENTICATED
+            return interrupt(state)
         
         return state
     
@@ -444,7 +445,7 @@ class HealthcareConversationAgent:
         
         # Clear pending action
         state["pending_action"] = None
-        return state
+        return interrupt(state)
     
     async def handle_confirm_appointment(self, state: ConversationState) -> ConversationState:
         """Handle appointment confirmation"""
@@ -489,7 +490,7 @@ class HealthcareConversationAgent:
             clarify_msg = f"Which appointment would you like to {action}? Please tell me the number (1, 2, etc.)."
             state["messages"].append(AIMessage(content=clarify_msg))
         
-        return state
+        return interrupt(state)
     
     def _parse_appointment_selection(self, user_input: str, appointments: List[Dict]) -> Optional[Dict]:
         """Parse user input to select an appointment"""
@@ -523,7 +524,7 @@ class HealthcareConversationAgent:
             state["current_state"] = ConversationStates.AUTHENTICATED if state["verified"] else ConversationStates.INITIAL
         
         state["messages"].append(AIMessage(content=error_msg))
-        return state
+        return interrupt(state)
     
     def route_conversation(self, state: ConversationState) -> ConversationState:
         """Router node - pass-through for conditional routing"""
@@ -569,7 +570,8 @@ async def interactive_chat():
         else:
             state["messages"].append(HumanMessage(content=user_input))
             # Resume the state machine from the last state
-            state = await agent.graph.ainvoke(state, config=thread_config)
+            result = await agent.graph.ainvoke(state, config=thread_config)
+            state = result["__interrupt__"][-1].value
         # Print the latest AI message
         ai_message = state["messages"][-1].content
         print(f"Agent: {ai_message}")
