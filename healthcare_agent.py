@@ -5,6 +5,8 @@ Fixed version compatible with latest LangGraph API
 
 from typing import TypedDict, Annotated, Literal, Optional, List, Dict, Any
 from langgraph.graph import StateGraph, END
+from langgraph.checkpoint.memory import MemorySaver
+from langgraph.types import interrupt, Command
 from langchain_core.messages import BaseMessage, HumanMessage, AIMessage, ToolMessage
 from langchain_openai import ChatOpenAI
 from langchain_groq import ChatGroq
@@ -15,6 +17,7 @@ import re
 from enum import Enum
 import os
 from dotenv import load_dotenv
+import asyncio
 
 # Load environment variables
 load_dotenv(override=True)
@@ -235,7 +238,7 @@ class HealthcareConversationAgent:
         graph.add_node("router", self.route_conversation)
         
         # Set entry point
-        graph.set_entry_point("initial_handler")
+        graph.set_entry_point("router")
         
         # Add edges
         self._add_graph_edges(graph)
@@ -293,12 +296,14 @@ class HealthcareConversationAgent:
             {"role": "system", "content": system_prompt},
             {"role": "user", "content": user_message}
         ])
-
         
         state["messages"].append(AIMessage(content=response.content))
         state["current_state"] = ConversationStates.VERIFICATION
+
+        response = interrupt(state)
         
-        return state
+        return interrupt(state)
+
     
     async def handle_verification(self, state: ConversationState) -> ConversationState:
         """Handle identity verification process"""
@@ -388,10 +393,10 @@ class HealthcareConversationAgent:
         if any(word in intent_lower for word in ["list", "show", "view", "see", "appointments"]):
             state["current_state"] = ConversationStates.LIST_APPOINTMENTS
         elif any(word in intent_lower for word in ["confirm", "confirmation"]):
-            state["current_state"] = ConversationStates.LIST_APPOINTMENTS
+            state["current_state"] = ConversationStates.CONFIRM_APPOINTMENT
             state["pending_action"] = "confirm"
         elif any(word in intent_lower for word in ["cancel", "cancellation"]):
-            state["current_state"] = ConversationStates.LIST_APPOINTMENTS  
+            state["current_state"] = ConversationStates.CANCEL_APPOINTMENT  
             state["pending_action"] = "cancel"
         
         return state
@@ -528,12 +533,22 @@ class HealthcareConversationAgent:
         """Determine the next state based on current conversation state"""
         return state["current_state"]
     
-    async def process_message(self, user_message: str, session_state: Optional[ConversationState] = None) -> ConversationState:
-        """Main entry point for processing user messages"""
-        
-        if session_state is None:
-            # Initialize new conversation
-            session_state = ConversationState(
+
+# ============================================================================
+# EXAMPLE USAGE
+# ============================================================================
+
+async def interactive_chat():
+    agent = HealthcareConversationAgent()
+    thread_config = {"configurable": {"thread_id": "some_id"}}
+    state = None
+    print("🏥 Healthcare Agent Test")
+    print("=" * 30)
+    while True:
+        user_input = input("You: ")
+        # If this is the first message, prompt the user
+        if state is None:
+            state = ConversationState(
                 messages=[],
                 current_state=ConversationStates.INITIAL,
                 verified=False,
@@ -547,51 +562,19 @@ class HealthcareConversationAgent:
                 last_error=None,
                 session_metadata={}
             )
-        
-        # Add user message to conversation
-        session_state["messages"].append(HumanMessage(content=user_message))
-        
-        # Process through state machine
-        result = await self.graph.ainvoke(session_state)
-        
-        return result
-
-# ============================================================================
-# EXAMPLE USAGE
-# ============================================================================
-
-async def example_usage(agent: HealthcareConversationAgent):
-    """Example of how to use the healthcare conversation agent"""
-    
-    # Check if Groq API key is set
-    if not os.getenv("GROQ_API_KEY"):
-        print("Please set your GROQ_API_KEY environment variable")
-        return
-    
-    # Test conversation
-    print("🏥 Healthcare Agent Test")
-    print("=" * 30)
-    
-    # Start conversation
-    state = await agent.process_message("Hi, I need to check my appointments")
-    print(f"Agent: {state['messages'][-1].content}")
-    
-    # Verification
-    state = await agent.process_message("My name is John Doe, phone is 555-0123, and I was born on January 1st, 1990", state)
-    print(f"Agent: {state['messages'][-1].content}")
-    
-    # List appointments
-    state = await agent.process_message("I'd like to see my appointments", state)
-    print(f"Agent: {state['messages'][-1].content}")
-
-async def get_response(llm: ChatGroq, message: str):
-    response = await llm.ainvoke([
-        {"role": "system", "content": "You are a helpful assistant."},
-        {"role": "user", "content": message}
-    ])
-    return response
+            state["messages"].append(HumanMessage(content=user_input))
+            # Process message
+            result = await agent.graph.ainvoke(state, config=thread_config)
+            state = result["__interrupt__"][-1].value
+        else:
+            state["messages"].append(HumanMessage(content=user_input))
+            # Resume the state machine from the last state
+            state = await agent.graph.ainvoke(state, config=thread_config)
+        # Print the latest AI message
+        ai_message = state["messages"][-1].content
+        print(f"Agent: {ai_message}")
+        if state["current_state"] == ConversationStates.END_CONVERSATION:
+            break
 
 if __name__ == "__main__":
-    import asyncio
-    agent = HealthcareConversationAgent()
-    asyncio.run(example_usage(agent))
+    asyncio.run(interactive_chat())
