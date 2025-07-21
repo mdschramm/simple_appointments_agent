@@ -3,33 +3,25 @@ LangGraph-based Conversational AI Agent for Healthcare Appointment Management
 Fixed version compatible with latest LangGraph API
 """
 
-from typing import TypedDict, Annotated, Literal, Optional, List, Dict, Any
+from typing import TypedDict, Annotated, Optional, List, Dict, Any
 from langgraph.graph import StateGraph, END
-from langgraph.checkpoint.memory import MemorySaver
-from langgraph.types import interrupt, Command
-from langchain_core.messages import BaseMessage, HumanMessage, AIMessage, ToolMessage
+from langgraph.types import interrupt
+from langchain_core.messages import BaseMessage, HumanMessage, AIMessage
 from langchain_openai import ChatOpenAI
 from langchain_groq import ChatGroq
-from langchain_core.tools import tool
-from datetime import datetime, date
-import hashlib
-import re
 from enum import Enum
-import os
 from dotenv import load_dotenv
-import asyncio
 from langchain.prompts import ChatPromptTemplate, MessagesPlaceholder
-from langchain.chains import LLMChain
 import json
-import datetime
+from tools import extract_verification_info, fetch_appointments, confirm_patient_appointment, cancel_patient_appointment, verify_patient_identity
+from constants import MAX_VERIFICATION_ATTEMPTS, PII_FIELDS
+
 
 # Load environment variables
 load_dotenv(override=True)
 # ============================================================================
 # STATE DEFINITIONS
 # ============================================================================
-
-PII_FIELDS = ["full_name", "phone", "date_of_birth"]
 
 class ConversationStates(str, Enum):
     INITIAL = "initial"
@@ -53,197 +45,23 @@ class ConversationState(TypedDict):
     verification_attempts: int
     verification_data: Dict[str, Optional[str]]  # collected verification info
     pending_action: Optional[str]
-    selected_appointment_id: Optional[str]
+    selected_appointment_id: Optional[str] # Use later for confirming before confirm/cancel
     appointments: List[Dict[str, Any]]
-    error_count: int
     last_error: Optional[str]
     session_metadata: Dict[str, Any]
-
-# ============================================================================
-# MOCK DATABASE SERVICES
-# ============================================================================
-
-class MockPatientService:
-    """Mock service for patient verification and data retrieval"""
-    
-    @staticmethod
-    def hash_pii(value: str) -> str:
-        """Hash PII for secure storage and comparison"""
-        return hashlib.sha256(value.lower().strip().encode()).hexdigest()
-
-
-    @staticmethod
-    def parse_date(date_str: str) -> Optional[datetime.date]:
-        for fmt in ("%Y-%m-%d", "%m/%d/%Y", "%Y/%m/%d", "%d-%m-%Y", "%m-%d-%Y"):
-            try:
-                return datetime.datetime.strptime(date_str.strip(), fmt).date()
-            except ValueError:
-                continue
-        return None
-    
-    @staticmethod
-    async def verify_patient(full_name: str, phone: str, date_of_birth: str) -> Optional[str]:
-        """Verify patient identity and return patient_id if successful"""
-        # Mock verification - replace with actual database logic
-        mock_patients = {
-            ("john doe", "5550123", datetime.date(1990, 1, 1)): "patient_123",
-            ("jane smith", "5550124", datetime.date(1985, 5, 15)): "patient_456",
-        }
-        
-        # Normalize inputs
-        name_normalized = full_name.lower().strip()
-        phone_normalized = re.sub(r'\D', '', phone)[-10:] if phone else ""
-        dob_normalized = MockPatientService.parse_date(date_of_birth) if date_of_birth else None
-        
-        normalized_key = (name_normalized, phone_normalized, dob_normalized)
-        
-        return mock_patients.get(normalized_key)
-
-class MockAppointmentService:
-    """Mock service for appointment management"""
-    
-    @staticmethod
-    async def get_appointments(patient_id: str) -> List[Dict[str, Any]]:
-        """Get all appointments for a patient"""
-        mock_appointments = {
-            "patient_123": [
-                {
-                    "id": "appt_001",
-                    "datetime": "2025-07-25 10:00:00",
-                    "provider": "Dr. Smith",
-                    "type": "Annual Checkup",
-                    "status": "scheduled",
-                    "location": "Main Clinic"
-                },
-                {
-                    "id": "appt_002", 
-                    "datetime": "2025-08-15 14:30:00",
-                    "provider": "Dr. Jones",
-                    "type": "Follow-up",
-                    "status": "scheduled",
-                    "location": "Cardiology Wing"
-                }
-            ]
-        }
-        return mock_appointments.get(patient_id, [])
-    
-    @staticmethod
-    async def confirm_appointment(appointment_id: str) -> bool:
-        """Confirm an appointment"""
-        return True
-    
-    @staticmethod
-    async def cancel_appointment(appointment_id: str) -> bool:
-        """Cancel an appointment"""
-        return True
-
-# ============================================================================
-# LANGGRAPH TOOLS
-# ============================================================================
-
-@tool
-async def extract_verification_info(field_name: str, value: str) -> Dict[str, Any]:
-    """
-    Extract verification information from a message
-    
-    Args:
-        field_name: Name of the field to extract (full_name, phone_number, date_of_birth)
-        value: Value of the field
-    """
-    if field_name not in PII_FIELDS:
-        return {"success": False, "data": None}
-    return {"success": True, "data": {field_name: value}}
-
-
-@tool
-async def fetch_appointments(patient_id: str) -> Dict[str, Any]:
-    """
-    Fetch all appointments for a verified patient
-    
-    Args:
-        patient_id: The verified patient's ID
-    """
-    try:
-        appointments = await MockAppointmentService.get_appointments(patient_id)
-        return {
-            "success": True,
-            "appointments": appointments,
-            "count": len(appointments)
-        }
-    except Exception as e:
-        return {"success": False, "appointments": [], "message": f"Error fetching appointments: {str(e)}"}
-
-@tool
-async def confirm_patient_appointment(appointment_id: str) -> Dict[str, Any]:
-    """
-    Confirm a specific appointment
-    
-    Args:
-        appointment_id: The ID of the appointment to confirm
-    """
-    try:
-        success = await MockAppointmentService.confirm_appointment(appointment_id)
-        return {
-            "success": success,
-            "message": "Appointment confirmed successfully" if success else "Failed to confirm appointment"
-        }
-    except Exception as e:
-        return {"success": False, "message": f"Error confirming appointment: {str(e)}"}
-
-@tool
-async def cancel_patient_appointment(appointment_id: str) -> Dict[str, Any]:
-    """
-    Cancel a specific appointment
-    
-    Args:
-        appointment_id: The ID of the appointment to cancel
-    """
-    try:
-        success = await MockAppointmentService.cancel_appointment(appointment_id)
-        return {
-            "success": success,
-            "message": "Appointment cancelled successfully" if success else "Failed to cancel appointment"
-        }
-    except Exception as e:
-        return {"success": False, "message": f"Error cancelling appointment: {str(e)}"}
 
 # ============================================================================
 # HEALTHCARE CONVERSATION AGENT
 # ============================================================================
 
-MAX_VERIFICATION_ATTEMPTS = 7
-
 class HealthcareConversationAgent:
     """Main conversation agent with LangGraph state machine"""
     
-    def __init__(self, llm_model: str = "llama-3.3-70b-versatile"):
-        # Use Groq's native integration instead of OpenAI compatibility
-        groq_api_key = os.environ.get("GROQ_API_KEY")
-        print(f"Using Groq API key: {groq_api_key[:5]}...{groq_api_key[-5:] if groq_api_key else None}")
+    def __init__(self, llm_chat: ChatOpenAI | ChatGroq):
         
+        self.system_prompt = """Be friendly and conversational. {additional_instructions}"""
+        self.llm = llm_chat
         
-        self.system_prompt = """
-        Be friendly and conversational. 
-        {additional_instructions}
-        
-
-       """
-        
-        if not groq_api_key:
-            raise ValueError("GROQ_API_KEY environment variable not found")
-            
-        # self.llm = ChatGroq(
-        #     model=llm_model,
-        #     temperature=0.1,
-        #     max_retries=2,
-        #     groq_api_key=groq_api_key  # Explicitly pass the API key
-        # )
-        self.llm = ChatOpenAI(
-            model="gpt-4.1-mini",
-            temperature=0.1,
-            max_retries=2,
-            openai_api_key=os.environ.get("OPENAI_API_KEY")
-        )
         self.prompt = ChatPromptTemplate.from_messages([
             ("system", self.system_prompt),
             MessagesPlaceholder(variable_name="chat_history"),
@@ -308,26 +126,6 @@ class HealthcareConversationAgent:
             }
         )
 
-    async def _verify_patient_identity(self, verification_data: Dict[str, Any]) -> Dict[str, Any]:
-        """
-        Verify patient identity using provided credentials
-        
-        Args:
-            Dict of verification data containing:
-
-            full_name: Patient's full name
-            phone: Patient's phone number  
-            date_of_birth: Patient's date of birth (YYYY-MM-DD format)
-        """
-        try:
-            patient_id = await MockPatientService.verify_patient(**verification_data)
-            return {
-                "success": patient_id is not None,
-                "patient_id": patient_id,
-                "message": "Identity verified successfully" if patient_id else "Identity verification failed"
-            }
-        except Exception as e:
-            return {"success": False, "patient_id": None, "message": f"Verification error: {str(e)}"}
     
     async def handle_initial(self, state: ConversationState) -> ConversationState:
        # Determine using keywords search if there there's any pending action to add todo remove when additional_instructions works
@@ -429,7 +227,7 @@ class HealthcareConversationAgent:
                 message += ", ".join([key.replace("_", " ") for key in PII_FIELDS if key not in state["verification_data"].keys()])
                 state["messages"].append(AIMessage(content=message))
                 return interrupt(state)
-            result = await self._verify_patient_identity(state["verification_data"])
+            result = await verify_patient_identity(state["verification_data"])
             if result["success"]:
                 state["verified"] = True
                 state["patient_id"] = result["patient_id"]
@@ -632,18 +430,20 @@ class HealthcareConversationAgent:
             }
         )
 
-        if response == NONE:
+        content = response.content
+
+        if content == NONE:
             return None
 
         try:
-            response = int(response)
+            content = int(content)
         except ValueError:
             return None
 
-        if response < 1 or response > len(appointments):
+        if content < 1 or content > len(appointments):
             return None
   
-        return appointments[response - 1]
+        return appointments[content - 1]
     
     async def handle_error_recovery(self, state: ConversationState) -> ConversationState:
         """Handle error states and recovery"""
@@ -697,58 +497,3 @@ class HealthcareConversationAgent:
         """Determine the next state based on current conversation state"""
         return state["current_state"]
     
-
-# ============================================================================
-# EXAMPLE USAGE
-# ============================================================================
-
-async def interactive_chat():
-    agent = HealthcareConversationAgent()
-    thread_config = {"configurable": {"thread_id": "some_id"}}
-    state = None
-    print("🏥 Healthcare Agent Test")
-    print("=" * 30)
-    while True:
-        user_input = input("You: ")
-        # If this is the first message, prompt the user
-        if state is None:
-            state = ConversationState(
-                messages=[],
-                current_state=ConversationStates.INITIAL,
-                verified=False,
-                patient_id=None,
-                verification_attempts=0,
-                verification_data={},
-                pending_action=None,
-                selected_appointment_id=None,
-                appointments=[],
-                error_count=0,
-                last_error=None,
-                session_metadata={"last_message_read": 0}
-            )
-            state["messages"].append(HumanMessage(content=user_input))
-            # Process message
-            result = await agent.graph.ainvoke(state, config=thread_config)
-            state = result["__interrupt__"][-1].value
-        else:
-            state["messages"].append(HumanMessage(content=user_input))
-            state["session_metadata"]["last_message_read"] += 1
-            # Resume the state machine from the last state
-            result = await agent.graph.ainvoke(state, config=thread_config)
-            if "__interrupt__" in result:
-                state = result["__interrupt__"][-1].value
-            else:
-                state = result
-        # Print the latest AI message
-        last_message_read = state["session_metadata"]["last_message_read"]
-        for i in range(last_message_read, len(state["messages"])):
-            if isinstance(state["messages"][i], AIMessage):
-                ai_message = state["messages"][i].content
-                print(f"Agent: {ai_message}")
-
-        state["session_metadata"]["last_message_read"] = len(state["messages"]) - 1
-        if state["current_state"] == ConversationStates.END_CONVERSATION:
-            break
-
-if __name__ == "__main__":
-    asyncio.run(interactive_chat())

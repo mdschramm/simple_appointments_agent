@@ -1,121 +1,95 @@
 #!/usr/bin/env python3
-"""
-Quick test script for the Healthcare Conversation Agent
-Run this after installing the minimal requirements to test the agent.
-"""
-
 import os
 import asyncio
 from dotenv import load_dotenv
+from healthcare_agent import HealthcareConversationAgent, ConversationState, ConversationStates
+from langchain_openai import ChatOpenAI
+from langchain_groq import ChatGroq
+from langchain_core.messages import BaseMessage, HumanMessage, AIMessage
 
 # Load environment variables
 load_dotenv()
 
-# Set OpenAI API key if not already set
-if not os.getenv("OPENAI_API_KEY"):
-    api_key = input("Please enter your OpenAI API key: ")
-    os.environ["OPENAI_API_KEY"] = api_key
+# ============================================================================
+# EXAMPLE USAGE
+# ============================================================================
 
-# Import the agent (assumes the main code is saved as healthcare_agent.py)
-try:
-    from healthcare_agent import HealthcareConversationAgent
-except ImportError:
-    print("Error: Make sure the healthcare agent code is saved as 'healthcare_agent.py'")
-    exit(1)
+def get_chat_model():
+    # Use Groq's native integration instead of OpenAI compatibility
+    # groq_api_key = os.environ.get("GROQ_API_KEY")
+    # if not groq_api_key:
+    #     raise ValueError("GROQ_API_KEY environment variable not found")
+    
+    # print(f"Using Groq API key: {groq_api_key[:5]}...{groq_api_key[-5:] if groq_api_key else None}")
 
-async def interactive_test():
-    """Interactive test of the healthcare agent"""
-    print("🏥 Healthcare Conversation Agent Test")
-    print("=" * 50)
-    print("Test patient credentials:")
-    print("- Name: John Doe")
-    print("- Phone: 555-0123") 
-    print("- DOB: 1990-01-01")
-    print("=" * 50)
+    # llm = ChatGroq(
+    #     model=llm_model,
+    #     temperature=0.1,
+    #     max_retries=2,
+    #     groq_api_key=groq_api_key  # Explicitly pass the API key
+    # )
     
-    # Initialize agent
-    try:
-        agent = HealthcareConversationAgent()
-        print("✅ Agent initialized successfully!")
-    except Exception as e:
-        print(f"❌ Failed to initialize agent: {e}")
-        return
+    open_ai_api_key = os.environ.get("OPENAI_API_KEY")
+    if not open_ai_api_key:
+        raise ValueError("OPENAI_API_KEY environment variable not found")
+    print(f"Using OpenAI API key: {open_ai_api_key[:5]}...{open_ai_api_key[-5:] if open_ai_api_key else None}")
     
-    # Start conversation
+    llm = ChatOpenAI(
+        model="gpt-4.1-mini",
+        temperature=0.1,
+        max_retries=2,
+        openai_api_key=open_ai_api_key
+    )
+    return llm
+
+async def interactive_chat():
+    llm = get_chat_model()
+    agent = HealthcareConversationAgent(llm)
+    thread_config = {"configurable": {"thread_id": "some_id"}}
     state = None
-    print("\n💬 Starting conversation...")
-    print("Type 'quit' to exit\n")
-    
+    print("🏥 Healthcare Agent Test")
+    print("=" * 30)
     while True:
-        try:
-            # Get user input
-            if state is None:
-                user_input = "Hello, I need help with my appointments"
-                print(f"👤 User: {user_input}")
-            else:
-                user_input = input("👤 User: ")
-                if user_input.lower() in ['quit', 'exit', 'bye']:
-                    break
-            
+        user_input = input("You: ")
+        # If this is the first message, prompt the user
+        if state is None:
+            state = ConversationState(
+                messages=[],
+                current_state=ConversationStates.INITIAL,
+                verified=False,
+                patient_id=None,
+                verification_attempts=0,
+                verification_data={},
+                pending_action=None,
+                selected_appointment_id=None,
+                appointments=[],
+                error_count=0,
+                last_error=None,
+                session_metadata={"last_message_read": 0}
+            )
+            state["messages"].append(HumanMessage(content=user_input))
             # Process message
-            state = await agent.process_message(user_input, state)
-            
-            # Display agent response
-            last_message = state["messages"][-1]
-            print(f"🤖 Agent: {last_message.content}\n")
-            
-            # Display current state for debugging
-            print(f"🔍 State: {state['current_state']}, Verified: {state['verified']}")
-            print("-" * 50)
-            
-        except KeyboardInterrupt:
-            print("\n👋 Goodbye!")
-            break
-        except Exception as e:
-            print(f"❌ Error: {e}")
-            break
+            result = await agent.graph.ainvoke(state, config=thread_config)
+            state = result["__interrupt__"][-1].value
+        else:
+            state["messages"].append(HumanMessage(content=user_input))
+            state["session_metadata"]["last_message_read"] += 1
+            # Resume the state machine from the last state
+            result = await agent.graph.ainvoke(state, config=thread_config)
+            if "__interrupt__" in result:
+                state = result["__interrupt__"][-1].value
+            else:
+                state = result
+        # Print the latest AI message
+        last_message_read = state["session_metadata"]["last_message_read"]
+        for i in range(last_message_read, len(state["messages"])):
+            if isinstance(state["messages"][i], AIMessage):
+                ai_message = state["messages"][i].content
+                print(f"Agent: {ai_message}")
 
-async def automated_test():
-    """Automated test with predefined conversation flow"""
-    print("🤖 Running automated test...")
-    
-    agent = HealthcareConversationAgent()
-    
-    # Test conversation flow
-    test_messages = [
-        "Hi, I need to check my appointments",
-        "My name is John Doe, phone is 555-0123, and I was born on January 1st, 1990", 
-        "I'd like to see my appointments",
-        "I want to confirm the first appointment",
-        "Thank you!"
-    ]
-    
-    state = None
-    for i, message in enumerate(test_messages, 1):
-        print(f"\n--- Step {i} ---")
-        print(f"👤 User: {message}")
-        
-        state = await agent.process_message(message, state)
-        
-        last_message = state["messages"][-1]
-        print(f"🤖 Agent: {last_message.content}")
-        print(f"🔍 State: {state['current_state']}, Verified: {state['verified']}")
-
-def main():
-    """Main function to run tests"""
-    print("Choose test mode:")
-    print("1. Interactive test (chat with the agent)")
-    print("2. Automated test (predefined conversation)")
-    
-    choice = input("\nEnter choice (1 or 2): ").strip()
-    
-    if choice == "1":
-        asyncio.run(interactive_test())
-    elif choice == "2":
-        asyncio.run(automated_test())
-    else:
-        print("Invalid choice. Running interactive test...")
-        asyncio.run(interactive_test())
+        state["session_metadata"]["last_message_read"] = len(state["messages"]) - 1
+        if state["current_state"] == ConversationStates.END_CONVERSATION:
+            break
 
 if __name__ == "__main__":
-    main()
+    asyncio.run(interactive_chat())
