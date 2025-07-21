@@ -21,12 +21,15 @@ import asyncio
 from langchain.prompts import ChatPromptTemplate, MessagesPlaceholder
 from langchain.chains import LLMChain
 import json
+import datetime
 
 # Load environment variables
 load_dotenv(override=True)
 # ============================================================================
 # STATE DEFINITIONS
 # ============================================================================
+
+PII_FIELDS = ["full_name", "phone", "date_of_birth"]
 
 class ConversationStates(str, Enum):
     INITIAL = "initial"
@@ -67,20 +70,30 @@ class MockPatientService:
     def hash_pii(value: str) -> str:
         """Hash PII for secure storage and comparison"""
         return hashlib.sha256(value.lower().strip().encode()).hexdigest()
+
+
+    @staticmethod
+    def parse_date(date_str: str) -> Optional[datetime.date]:
+        for fmt in ("%Y-%m-%d", "%m/%d/%Y", "%Y/%m/%d", "%d-%m-%Y", "%m-%d-%Y"):
+            try:
+                return datetime.datetime.strptime(date_str.strip(), fmt).date()
+            except ValueError:
+                continue
+        return None
     
     @staticmethod
-    async def verify_patient(full_name: str, phone: str, dob: str) -> Optional[str]:
+    async def verify_patient(full_name: str, phone: str, date_of_birth: str) -> Optional[str]:
         """Verify patient identity and return patient_id if successful"""
         # Mock verification - replace with actual database logic
         mock_patients = {
-            ("john doe", "5550123", "1990-01-01"): "patient_123",
-            ("jane smith", "5550124", "1985-05-15"): "patient_456",
+            ("john doe", "5550123", datetime.date(1990, 1, 1)): "patient_123",
+            ("jane smith", "5550124", datetime.date(1985, 5, 15)): "patient_456",
         }
         
         # Normalize inputs
         name_normalized = full_name.lower().strip()
         phone_normalized = re.sub(r'\D', '', phone)[-10:] if phone else ""
-        dob_normalized = dob.strip() if dob else ""
+        dob_normalized = MockPatientService.parse_date(date_of_birth) if date_of_birth else None
         
         normalized_key = (name_normalized, phone_normalized, dob_normalized)
         
@@ -129,24 +142,18 @@ class MockAppointmentService:
 # ============================================================================
 
 @tool
-async def verify_patient_identity(full_name: str, phone: str, date_of_birth: str) -> Dict[str, Any]:
+async def extract_verification_info(field_name: str, value: str) -> Dict[str, Any]:
     """
-    Verify patient identity using provided credentials
+    Extract verification information from a message
     
     Args:
-        full_name: Patient's full name
-        phone: Patient's phone number  
-        date_of_birth: Patient's date of birth (YYYY-MM-DD format)
+        field_name: Name of the field to extract (full_name, phone_number, date_of_birth)
+        value: Value of the field
     """
-    try:
-        patient_id = await MockPatientService.verify_patient(full_name, phone, date_of_birth)
-        return {
-            "success": patient_id is not None,
-            "patient_id": patient_id,
-            "message": "Identity verified successfully" if patient_id else "Identity verification failed"
-        }
-    except Exception as e:
-        return {"success": False, "patient_id": None, "message": f"Verification error: {str(e)}"}
+    if field_name not in PII_FIELDS:
+        return {"success": False, "data": None}
+    return {"success": True, "data": {field_name: value}}
+
 
 @tool
 async def fetch_appointments(patient_id: str) -> Dict[str, Any]:
@@ -204,6 +211,8 @@ async def cancel_patient_appointment(appointment_id: str) -> Dict[str, Any]:
 # HEALTHCARE CONVERSATION AGENT
 # ============================================================================
 
+MAX_VERIFICATION_ATTEMPTS = 7
+
 class HealthcareConversationAgent:
     """Main conversation agent with LangGraph state machine"""
     
@@ -242,7 +251,7 @@ class HealthcareConversationAgent:
         self.chain = self.prompt | self.llm
             
         self.tools = [
-            verify_patient_identity,
+            extract_verification_info,
             fetch_appointments, 
             confirm_patient_appointment,
             cancel_patient_appointment
@@ -298,6 +307,27 @@ class HealthcareConversationAgent:
                 ConversationStates.END_CONVERSATION: END
             }
         )
+
+    async def _verify_patient_identity(self, verification_data: Dict[str, Any]) -> Dict[str, Any]:
+        """
+        Verify patient identity using provided credentials
+        
+        Args:
+            Dict of verification data containing:
+
+            full_name: Patient's full name
+            phone: Patient's phone number  
+            date_of_birth: Patient's date of birth (YYYY-MM-DD format)
+        """
+        try:
+            patient_id = await MockPatientService.verify_patient(**verification_data)
+            return {
+                "success": patient_id is not None,
+                "patient_id": patient_id,
+                "message": "Identity verified successfully" if patient_id else "Identity verification failed"
+            }
+        except Exception as e:
+            return {"success": False, "patient_id": None, "message": f"Verification error: {str(e)}"}
     
     async def handle_initial(self, state: ConversationState) -> ConversationState:
        # Determine using keywords search if there there's any pending action to add todo remove when additional_instructions works
@@ -351,7 +381,7 @@ class HealthcareConversationAgent:
     async def handle_verification(self, state: ConversationState) -> ConversationState:
         """Handle identity verification process"""
         
-        if state["verification_attempts"] >= 3:
+        if state["verification_attempts"] >= MAX_VERIFICATION_ATTEMPTS:
             state["current_state"] = ConversationStates.ERROR_RECOVERY
             state["last_error"] = "Maximum verification attempts exceeded"
             return state
@@ -368,8 +398,10 @@ class HealthcareConversationAgent:
         - Phone number (various formats acceptable)  
         - Date of birth (MM/DD/YYYY, YYYY-MM-DD, or similar formats)
         
-        If you have all three pieces of information, call the verify_patient_identity tool.
-        If missing information, ask for what's still needed conversationally.
+        For each piece of information found, call the extract_verification_info tool with the field name {PII_FIELDS} and the value.
+        For dates, please convert to YYYY-MM-DD format.
+        Here is information that the user has already provided: "{state['verification_data']}"
+        Be conversational and let the user know if inputs are missing or malformed.
         """
         
         response = await self.llm.bind_tools(self.tools).ainvoke([
@@ -380,39 +412,50 @@ class HealthcareConversationAgent:
         # Check if LLM called verification tool
         if response.tool_calls:
             for tool_call in response.tool_calls:
-                if tool_call["name"] == "verify_patient_identity":
+                if tool_call["name"] == "extract_verification_info":
                     # Execute the tool
-                    result = await verify_patient_identity.ainvoke(tool_call["args"])
-                    
-                    if result["success"]:
-                        state["verified"] = True
-                        state["patient_id"] = result["patient_id"]
-                        state["current_state"] = ConversationStates.AUTHENTICATED
-                        
-                        welcome_msg = "Great! I've verified your identity."
-                        if not state["pending_action"]:
-                            welcome_msg += " I can help you with:\n"
-                            welcome_msg += "• View your appointments\n• Confirm appointments\n• Cancel appointments\n\n"
-                            welcome_msg += "What would you like to do?"
-                        
-                        state["messages"].append(AIMessage(content=welcome_msg))
+                    extracted_info_result = await extract_verification_info.ainvoke(tool_call["args"])
+                    if extracted_info_result["success"]:
+                        state["verification_data"] = {**state["verification_data"], **extracted_info_result["data"]}
+            if len(state["verification_data"]) != len(PII_FIELDS):
+                message = "I don't have all the information I need to verify your identity. So far you've provided: "
+                message += ", ".join([key.replace("_", " ") for key in state["verification_data"].keys() if key in PII_FIELDS])
+                message += "\nPlease provide the missing information: "
+                message += ", ".join([key.replace("_", " ") for key in PII_FIELDS if key not in state["verification_data"].keys()])
+                state["messages"].append(AIMessage(content=message))
+                return interrupt(state)
+            result = await self._verify_patient_identity(state["verification_data"])
+            if result["success"]:
+                state["verified"] = True
+                state["patient_id"] = result["patient_id"]
+                state["current_state"] = ConversationStates.AUTHENTICATED
+                # Clear verified information from state for security
+                state["verification_data"] = {}
+                
+                welcome_msg = "Great! I've verified your identity."
+                if not state["pending_action"]:
+                    welcome_msg += " I can help you with:\n"
+                    welcome_msg += "• View your appointments\n• Confirm appointments\n• Cancel appointments\n\n"
+                    welcome_msg += "What would you like to do?"
+                
+                state["messages"].append(AIMessage(content=welcome_msg))
 
-                        # Ask about any pending actions
-                        pending_action = state["pending_action"]
-                        text = f"Which appointment would you like to {pending_action}? Please tell me the number (1, 2, etc.)"
-                        if pending_action in ["confirm", "cancel"]:
-                            state["messages"].append(AIMessage(content=text))
-                            return state
-                        elif pending_action == "list":
-                            # Proceeed right to authenticated and then list appointments
-                            return state
+                # Ask about any pending actions
+                pending_action = state["pending_action"]
+                text = f"Which appointment would you like to {pending_action}? Please tell me the number (1, 2, etc.)"
+                if pending_action in ["confirm", "cancel"]:
+                    state["messages"].append(AIMessage(content=text))
+                    return state
+                elif pending_action == "list":
+                    # Proceeed right to authenticated and then list appointments
+                    return state
 
-                    else:
-                        state["verification_attempts"] += 1
-                        error_msg = "I couldn't verify your identity with that information. "
-                        error_msg += "Please double-check your full name, phone number, and date of birth."
-                        
-                        state["messages"].append(AIMessage(content=error_msg))
+            else:
+                state["verification_attempts"] += 1
+                error_msg = "I couldn't verify your identity with that information. "
+                error_msg += "Please double-check your full name, phone number, and date of birth."
+                
+                state["messages"].append(AIMessage(content=error_msg))
         else:
             # LLM is asking for more information
             state["messages"].append(response)
@@ -612,6 +655,7 @@ class HealthcareConversationAgent:
                 state["current_state"] = recovered_state
                 return state
             else:
+                state["pending_action"] = None
                 state["messages"].append(AIMessage(content="Apologies I don't understand your request. Please let me know if you want to view your appointments, confirm an appointment, or cancel an appointment."))
                 state["current_state"] = ConversationStates.AUTHENTICATED
         else:
