@@ -321,8 +321,9 @@ class HealthcareConversationAgent:
         3. Date of birth (MM/DD/YYYY or YYYY-MM-DD format)
 
         Let the user know what they can do, but be clear about the verification requirement.
-        Your entire response should be a JSON object in the following format: {\"message\": \"<your main response>\", \"pending_action\": \"<list, confirm, cancel, unsure>\"}
-        Based on your reading of the user's previous message, determine if there should be a pending action
+        If the user gives any or all of the verification information, the pending action should be set to "verify"
+        Your entire response should be a JSON object in the following format: {\"message\": \"<your main response>\", \"pending_action\": \"<list, confirm, cancel, unsure, verify>\"}
+        Based on your reading of the user's previous message, determine if there should be a pending action.
         """
         # Get response
         response = await self.chain.ainvoke({
@@ -334,6 +335,10 @@ class HealthcareConversationAgent:
             response_json = json.loads(response.content)
             if response_json["pending_action"] in ["list", "confirm", "cancel"]:
                 state["pending_action"] = response_json["pending_action"]
+            if response_json["pending_action"] == "verify":
+                state["pending_action"] = None
+                state["current_state"] = ConversationStates.VERIFICATION
+                return state
             state["messages"].append(AIMessage(content=response_json["message"]))
         except json.JSONDecodeError:
             state["messages"].append(AIMessage(content=response.content))
@@ -607,8 +612,8 @@ class HealthcareConversationAgent:
                 state["current_state"] = recovered_state
                 return state
             else:
-                print("Error this will loop")
-                state["current_state"] = ConversationStates.ERROR_RECOVERY
+                state["messages"].append(AIMessage(content="Apologies I don't understand your request. Please let me know if you want to view your appointments, confirm an appointment, or cancel an appointment."))
+                state["current_state"] = ConversationStates.AUTHENTICATED
         else:
             error_msg = "I'm sorry, I encountered an issue. Let me try to help you differently."
             state["current_state"] = recovered_state
