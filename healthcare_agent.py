@@ -340,9 +340,12 @@ class HealthcareConversationAgent:
     #    elif "cancel" in user_input or "cancellation" in user_input:
     #        state["pending_action"] = "cancel"
 
-        instruction = """
-                You are a helpful healthcare assistant helping patients list, confirm, and/or cancel their appointments (only these 3 actions).
-        The user is not verified yet, so you can't perform these actions.
+        user_input = state["messages"][-1].content.lower()
+
+        instruction = f"""
+        You are a helpful healthcare assistant helping patients list, confirm, and/or cancel their appointments (only these 3 actions).
+        The user is not verified yet, so you can't perform these actions, however you can still save their intent in pending_action if they express it
+        in the user_input: {user_input}
 
         Before you can help a patient with their appointments, you need to verify their identity for security purposes.
         This requires their:
@@ -351,9 +354,12 @@ class HealthcareConversationAgent:
         3. Date of birth (MM/DD/YYYY or YYYY-MM-DD format)
 
         Let the user know what they can do, but be clear about the verification requirement.
-        If the user gives any or all of the verification information, the pending action should be set to "verify"
-        Your entire response should be a JSON object in the following format: {\"message\": \"<your main response>\", \"pending_action\": \"<list, confirm, cancel, unsure, verify>\"}
-        Based on your reading of the user's previous message, determine if there should be a pending action.
+        Your entire response should be a JSON object in the following format: {{\"message\": \"<your main response>\", \"pending_action\": \"<list, confirm, cancel, unsure, verify>\"}}
+        and based on the user_input.
+        
+        If the user provides verification information then pending_action should be set to "verify". 
+        Otherwise if they've specified confirming, listing/viewing, or cancelling appointments then pending_action should be set to that action.
+        Finally if you're unsure, put unsure for pending_action.
         """
         # Get response
         response = await self.chain.ainvoke({
@@ -366,7 +372,6 @@ class HealthcareConversationAgent:
             if response_json["pending_action"] in ["list", "confirm", "cancel"]:
                 state["pending_action"] = response_json["pending_action"]
             if response_json["pending_action"] == "verify":
-                state["pending_action"] = None
                 state["current_state"] = ConversationStates.VERIFICATION
                 return state
             state["messages"].append(AIMessage(content=response_json["message"]))
@@ -571,7 +576,7 @@ class HealthcareConversationAgent:
                 state["appointments"] = result["appointments"]
         
         # Parse appointment selection
-        selected_appointment = self._parse_appointment_selection(user_input, state["appointments"])
+        selected_appointment = await self._parse_appointment_selection(state, user_input)
         
         if selected_appointment:
             # Perform the action
@@ -601,25 +606,44 @@ class HealthcareConversationAgent:
         
         return interrupt(state)
     
-    def _parse_appointment_selection(self, user_input: str, appointments: List[Dict]) -> Optional[Dict]:
+    async def _parse_appointment_selection(self, state: ConversationState, user_input: str) -> Optional[Dict]:
         """Parse user input to select an appointment"""
-        if not appointments:
+        if not state["appointments"]:
             return None
+
+        appointments = state["appointments"]
         
         user_input_lower = user_input.lower()
+
+        appointment_descriptions = [f"{i+1}. {appt['type']} with {appt['provider']} on {appt['datetime']} at {appt['location']} with id {appt['id']}" for i, appt in enumerate(appointments)]
         
-        # Check for number selection
-        for i, appt in enumerate(appointments):
-            if str(i + 1) in user_input or f"{i+1}" in user_input:
-                return appt
-        
-        # Check for appointment type or provider matching
-        for appt in appointments:
-            if (appt["type"].lower() in user_input_lower or 
-                appt["provider"].lower() in user_input_lower):
-                return appt
-        
-        return None
+        NONE = "NONE"
+
+        selection_prompt = f"""
+        Given the list of appointments as described here {'\n'.join(appointment_descriptions)}
+        and the user's input as {user_input_lower}, indicate to be by number only e.g. "1" or "2" which
+        appointment the user is referring to. If the user's input does not match any of the appointments
+        then return {NONE}. Only return a number or {NONE} in your response. No other text. 
+        """
+
+        response = await self.chain.ainvoke(
+            {"additional_instructions": selection_prompt,
+            "chat_history": state["messages"],
+            }
+        )
+
+        if response == NONE:
+            return None
+
+        try:
+            response = int(response)
+        except ValueError:
+            return None
+
+        if response < 1 or response > len(appointments):
+            return None
+  
+        return appointments[response - 1]
     
     async def handle_error_recovery(self, state: ConversationState) -> ConversationState:
         """Handle error states and recovery"""
