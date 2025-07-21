@@ -223,11 +223,17 @@ class HealthcareConversationAgent:
         if not groq_api_key:
             raise ValueError("GROQ_API_KEY environment variable not found")
             
-        self.llm = ChatGroq(
-            model=llm_model,
+        # self.llm = ChatGroq(
+        #     model=llm_model,
+        #     temperature=0.1,
+        #     max_retries=2,
+        #     groq_api_key=groq_api_key  # Explicitly pass the API key
+        # )
+        self.llm = ChatOpenAI(
+            model="gpt-4.1-mini",
             temperature=0.1,
             max_retries=2,
-            groq_api_key=groq_api_key  # Explicitly pass the API key
+            openai_api_key=os.environ.get("OPENAI_API_KEY")
         )
         self.prompt = ChatPromptTemplate.from_messages([
             ("system", self.system_prompt),
@@ -372,7 +378,6 @@ class HealthcareConversationAgent:
                 if tool_call["name"] == "verify_patient_identity":
                     # Execute the tool
                     result = await verify_patient_identity.ainvoke(tool_call["args"])
-                    state["messages"].append(ToolMessage(tool_call_id=tool_call["id"], content=str(result)))
                     
                     if result["success"]:
                         state["verified"] = True
@@ -425,8 +430,8 @@ class HealthcareConversationAgent:
                 return state
 
         menu_prompt = """
-        The user is verified and can access appointment features. Based on their messages and chat history
-        respond with only with one of the following available actions. If you don't think the user wants
+        The user is verified and can access appointment features. Prioritizing their most recent chat messages first,
+        determine the next action based on the user's intent. If you don't think the user wants
         any of the first 4, then respond with Unsure:
         - View/list appointments
         - Confirm appointments  
@@ -581,9 +586,9 @@ class HealthcareConversationAgent:
             SOMETHING_ELSE = "SOMETHING_ELSE"
             # attempt to see if use is asking for something else, if not then go back to authenticated state
             recovery_prompt = """
-            The system was unable to parse a selected appointment from the user's previous message.
-            It's possible that they were asking for something else. Determine if one of the following
-            options is true and respond with only one of the following strings: "UNPARSEABLE" or "SOMETHING_ELSE"
+            Analyze the user's last chat message and respond with only "UNPARSEABLE" if the user was asking to confirm or
+            cancel an appointment but none was specified. Respond with only "SOMETHING_ELSE" if the user was asking for or
+            referencing something else. Your only response to this message should be "UNPARSEABLE" or "SOMETHING_ELSE", nothing else.
             """
 
             response = await self.chain.ainvoke(
