@@ -18,6 +18,9 @@ from enum import Enum
 import os
 from dotenv import load_dotenv
 import asyncio
+from langchain.prompts import ChatPromptTemplate, MessagesPlaceholder
+from langchain.chains import LLMChain
+import json
 
 # Load environment variables
 load_dotenv(override=True)
@@ -35,6 +38,9 @@ class ConversationStates(str, Enum):
     ERROR_RECOVERY = "error_recovery"
     END_CONVERSATION = "end_conversation"
 
+
+# Todo: Enable user's to specify which appointment they want to cancel or confirm
+# Before getting to the confirm or cancelllation state
 class ConversationState(TypedDict):
     """Complete conversation state with all necessary tracking"""
     messages: Annotated[List[BaseMessage], "conversation history"]
@@ -206,6 +212,14 @@ class HealthcareConversationAgent:
         groq_api_key = os.environ.get("GROQ_API_KEY")
         print(f"Using Groq API key: {groq_api_key[:5]}...{groq_api_key[-5:] if groq_api_key else None}")
         
+        
+        self.system_prompt = """
+        Be friendly and conversational. 
+        {additional_instructions}
+        
+
+       """
+        
         if not groq_api_key:
             raise ValueError("GROQ_API_KEY environment variable not found")
             
@@ -215,6 +229,12 @@ class HealthcareConversationAgent:
             max_retries=2,
             groq_api_key=groq_api_key  # Explicitly pass the API key
         )
+        self.prompt = ChatPromptTemplate.from_messages([
+            ("system", self.system_prompt),
+            MessagesPlaceholder(variable_name="chat_history"),
+        ])
+        self.chain = self.prompt | self.llm
+            
         self.tools = [
             verify_patient_identity,
             fetch_appointments, 
@@ -274,33 +294,47 @@ class HealthcareConversationAgent:
         )
     
     async def handle_initial(self, state: ConversationState) -> ConversationState:
-        """Handle initial conversation state"""
-        
-        system_prompt = """
-        You are a helpful healthcare assistant helping patients manage their appointments.
-        
-        Before I can help you with your appointments, I need to verify your identity for security purposes.
-        This requires your:
+       # Determine using keywords search if there there's any pending action to add todo remove when additional_instructions works
+
+    #    user_input = state["messages"][-1].content.lower()
+    #    if "list" in user_input or "view" in user_input or "show" in user_input or "see" in user_input:
+    #        state["pending_action"] = "list"
+    #    elif "confirm" in user_input or "confirmation" in user_input:
+    #        state["pending_action"] = "confirm"
+    #    elif "cancel" in user_input or "cancellation" in user_input:
+    #        state["pending_action"] = "cancel"
+
+        instruction = """
+                You are a helpful healthcare assistant helping patients list, confirm, and/or cancel their appointments (only these 3 actions).
+        The user is not verified yet, so you can't perform these actions.
+
+        Before you can help a patient with their appointments, you need to verify their identity for security purposes.
+        This requires their:
         1. Full name (first and last)
         2. Phone number 
         3. Date of birth (MM/DD/YYYY or YYYY-MM-DD format)
-        
-        Please provide this information so I can help you with your appointments.
-        Be conversational and friendly, but clear about the verification requirement.
-        """
-        
-        last_message = state["messages"][-1] if state["messages"] else None
-        user_message = last_message.content if last_message else "Hello"
-        
-        response = await self.llm.ainvoke([
-            {"role": "system", "content": system_prompt},
-            {"role": "user", "content": user_message}
-        ])
-        
-        state["messages"].append(AIMessage(content=response.content))
-        state["current_state"] = ConversationStates.VERIFICATION
 
+        Let the user know what they can do, but be clear about the verification requirement.
+        Your entire response should be a JSON object in the following format: {\"message\": \"<your main response>\", \"pending_action\": \"<list, confirm, cancel, unsure>\"}
+        Based on your reading of the user's previous message, determine if there should be a pending action
+        """
+        # Get response
+        response = await self.chain.ainvoke({
+            "additional_instructions": instruction, 
+            "chat_history": state["messages"]})
+
+        # Attempt to parse as json
+        try:
+            response_json = json.loads(response.content)
+            if response_json["pending_action"] in ["list", "confirm", "cancel"]:
+                state["pending_action"] = response_json["pending_action"]
+            state["messages"].append(AIMessage(content=response_json["message"]))
+        except json.JSONDecodeError:
+            state["messages"].append(AIMessage(content=response.content))
+
+        state["current_state"] = ConversationStates.VERIFICATION
         return interrupt(state)
+
 
     
     async def handle_verification(self, state: ConversationState) -> ConversationState:
@@ -338,17 +372,31 @@ class HealthcareConversationAgent:
                 if tool_call["name"] == "verify_patient_identity":
                     # Execute the tool
                     result = await verify_patient_identity.ainvoke(tool_call["args"])
+                    state["messages"].append(ToolMessage(tool_call_id=tool_call["id"], content=str(result)))
                     
                     if result["success"]:
                         state["verified"] = True
                         state["patient_id"] = result["patient_id"]
                         state["current_state"] = ConversationStates.AUTHENTICATED
                         
-                        welcome_msg = "Great! I've verified your identity. I can now help you with:\n"
-                        welcome_msg += "• View your appointments\n• Confirm appointments\n• Cancel appointments\n\n"
-                        welcome_msg += "What would you like to do?"
+                        welcome_msg = "Great! I've verified your identity."
+                        if not state["pending_action"]:
+                            welcome_msg += " I can help you with:\n"
+                            welcome_msg += "• View your appointments\n• Confirm appointments\n• Cancel appointments\n\n"
+                            welcome_msg += "What would you like to do?"
                         
                         state["messages"].append(AIMessage(content=welcome_msg))
+
+                        # Ask about any pending actions
+                        pending_action = state["pending_action"]
+                        text = f"Which appointment would you like to {pending_action}? Please tell me the number (1, 2, etc.)"
+                        if pending_action in ["confirm", "cancel"]:
+                            state["messages"].append(AIMessage(content=text))
+                            return state
+                        elif pending_action == "list":
+                            # Proceeed right to authenticated and then list appointments
+                            return state
+
                     else:
                         state["verification_attempts"] += 1
                         error_msg = "I couldn't verify your identity with that information. "
@@ -364,41 +412,54 @@ class HealthcareConversationAgent:
     async def handle_authenticated(self, state: ConversationState) -> ConversationState:
         """Handle main menu after successful verification"""
         
-        last_message = state["messages"][-1]
-        user_input = last_message.content if isinstance(last_message, HumanMessage) else ""
-        
+        # If there's already a pending action from before, then navigate to that handler
+        if state["pending_action"]:
+            if state["pending_action"] == "confirm":
+                state["current_state"] = ConversationStates.CONFIRM_APPOINTMENT
+                return interrupt(state)
+            elif state["pending_action"] == "cancel":
+                state["current_state"] = ConversationStates.CANCEL_APPOINTMENT
+                return interrupt(state)
+            elif state["pending_action"] == "list":
+                state["current_state"] = ConversationStates.LIST_APPOINTMENTS
+                return state
+
         menu_prompt = """
-        The user is verified and can access appointment features. Based on their message,
-        determine what they want to do and respond helpfully.
-        
-        Respond only with one of the following available actions and only choose unsure if you truly are unsure:
+        The user is verified and can access appointment features. Based on their messages and chat history
+        respond with only with one of the following available actions. If you don't think the user wants
+        any of the first 4, then respond with Unsure:
         - View/list appointments
         - Confirm appointments  
         - Cancel appointments
+        - End conversation
         - Unsure
 
-        Only respond with one of the 4 listed actions
+        The only text in your response should be one of the 5 listed actions."
         """
         
-        response = await self.llm.ainvoke([
-            {"role": "system", "content": menu_prompt},
-            {"role": "user", "content": user_input}
-        ])
+        response = await self.chain.ainvoke(
+            {"additional_instructions": menu_prompt,
+            "chat_history": state["messages"]}
+        )
         
         # Determine next action based on user intent
         intent_lower = response.content.lower()
-        if any(word in intent_lower for word in ["list", "view"]):
+        if any(word in intent_lower for word in ["list", "view", "view/list", "see"]):
             state["current_state"] = ConversationStates.LIST_APPOINTMENTS
-        elif any(word in intent_lower for word in ["confirm"]):
+            state["pending_action"] = "list"
+        elif any(word in intent_lower for word in ["confirm", "confirmation"]):
             state["current_state"] = ConversationStates.CONFIRM_APPOINTMENT
             state["pending_action"] = "confirm"
-        elif any(word in intent_lower for word in ["cancel"]):
+        elif any(word in intent_lower for word in ["cancel", "cancellation"]):
             state["current_state"] = ConversationStates.CANCEL_APPOINTMENT  
             state["pending_action"] = "cancel"
         elif any(word in intent_lower for word in ["unsure"]):
             state["messages"].append(AIMessage(content="I'm not sure what you want to do. Please let me know if you want to view your appointments, confirm an appointment, or cancel an appointment."))
             state["current_state"] = ConversationStates.AUTHENTICATED
             return interrupt(state)
+        elif any(word in intent_lower for word in ["end", "quit"]):
+            state["current_state"] = ConversationStates.END_CONVERSATION
+            state["messages"].append(AIMessage(content="Nice chatting, have a great day!"))
         
         return state
     
@@ -411,6 +472,7 @@ class HealthcareConversationAgent:
         
         # Fetch appointments
         result = await fetch_appointments.ainvoke({"patient_id": state["patient_id"]})
+        state["pending_action"] = None
         
         if result["success"]:
             state["appointments"] = result["appointments"]
@@ -422,18 +484,9 @@ class HealthcareConversationAgent:
                     appt_text += f"   📅 {appt['datetime']}\n"
                     appt_text += f"   📍 {appt['location']}\n"
                     appt_text += f"   Status: {appt['status']}\n\n"
-                
-                # Add action-specific prompts
-                if state["pending_action"] == "confirm":
-                    appt_text += "Which appointment would you like to confirm?"
-                    state["current_state"] = ConversationStates.CONFIRM_APPOINTMENT
-                elif state["pending_action"] == "cancel":
-                    appt_text += "Which appointment would you like to cancel?"
-                    state["current_state"] = ConversationStates.CANCEL_APPOINTMENT
-                else:
-                    appt_text += "What would you like to do with these appointments?"
-                    state["current_state"] = ConversationStates.AUTHENTICATED
-                
+
+                appt_text += "Let me know if you'd like to confirm or cancel any of these appointments."
+                state["current_state"] = ConversationStates.AUTHENTICATED
                 state["messages"].append(AIMessage(content=appt_text))
             else:
                 no_appt_msg = "You don't have any upcoming appointments scheduled."
@@ -443,8 +496,6 @@ class HealthcareConversationAgent:
             state["current_state"] = ConversationStates.ERROR_RECOVERY
             state["last_error"] = "Failed to fetch appointments"
         
-        # Clear pending action
-        state["pending_action"] = None
         return interrupt(state)
     
     async def handle_confirm_appointment(self, state: ConversationState) -> ConversationState:
@@ -460,6 +511,11 @@ class HealthcareConversationAgent:
         
         last_message = state["messages"][-1]
         user_input = last_message.content if isinstance(last_message, HumanMessage) else ""
+
+        if not state["appointments"]:
+            result = await fetch_appointments.ainvoke({"patient_id": state["patient_id"]})
+            if result["success"]:
+                state["appointments"] = result["appointments"]
         
         # Parse appointment selection
         selected_appointment = self._parse_appointment_selection(user_input, state["appointments"])
@@ -472,7 +528,7 @@ class HealthcareConversationAgent:
             else:  # cancel
                 result = await cancel_patient_appointment.ainvoke({"appointment_id": selected_appointment["id"]})
                 action_word = "cancelled"
-            
+            state["pending_action"] = None
             if result["success"]:
                 success_msg = f"Perfect! I've {action_word} your appointment:\n\n"
                 success_msg += f"**{selected_appointment['type']}** with {selected_appointment['provider']}\n"
@@ -482,13 +538,13 @@ class HealthcareConversationAgent:
                 state["messages"].append(AIMessage(content=success_msg))
                 state["current_state"] = ConversationStates.AUTHENTICATED
             else:
-                error_msg = f"I wasn't able to {action} that appointment. Please try again."
-                state["messages"].append(AIMessage(content=error_msg))
                 state["current_state"] = ConversationStates.ERROR_RECOVERY
+                return state
         else:
             # Couldn't parse selection
-            clarify_msg = f"Which appointment would you like to {action}? Please tell me the number (1, 2, etc.)."
-            state["messages"].append(AIMessage(content=clarify_msg))
+            state["last_error"] = f"I had trouble parsing that appointment. Which appointment would you like to {action}? Please tell me the number (1, 2, etc.)."
+            state["current_state"] = ConversationStates.ERROR_RECOVERY
+            return state
         
         return interrupt(state)
     
@@ -514,16 +570,45 @@ class HealthcareConversationAgent:
     
     async def handle_error_recovery(self, state: ConversationState) -> ConversationState:
         """Handle error states and recovery"""
+        recovered_state = ConversationStates.AUTHENTICATED if state["verified"] else ConversationStates.INITIAL
         
         if state["last_error"] == "Maximum verification attempts exceeded":
             error_msg = "You've exceeded the maximum verification attempts. "
             error_msg += "Please contact our office directly for assistance."
             state["current_state"] = ConversationStates.END_CONVERSATION
+        elif "I had trouble parsing that appointment" in state["last_error"]:
+            UNPARSEABLE = "UNPARSEABLE"
+            SOMETHING_ELSE = "SOMETHING_ELSE"
+            # attempt to see if use is asking for something else, if not then go back to authenticated state
+            recovery_prompt = """
+            The system was unable to parse a selected appointment from the user's previous message.
+            It's possible that they were asking for something else. Determine if one of the following
+            options is true and respond with only one of the following strings: "UNPARSEABLE" or "SOMETHING_ELSE"
+            """
+
+            response = await self.chain.ainvoke(
+                {"additional_instructions": recovery_prompt,
+                "chat_history": state["messages"]}
+            )
+            
+            if response.content.lower() == UNPARSEABLE.lower():
+                action_state = ConversationStates.CONFIRM_APPOINTMENT if state["pending_action"] == "confirm" else ConversationStates.CANCEL_APPOINTMENT
+                state["current_state"] = action_state
+                state["messages"].append(AIMessage(content=state["last_error"]))
+                return interrupt(state)
+            elif response.content.lower() == SOMETHING_ELSE.lower():
+                # Determine next action based on user intent
+                state["pending_action"] = None
+                state["current_state"] = recovered_state
+                return state
+            else:
+                print("Error this will loop")
+                state["current_state"] = ConversationStates.ERROR_RECOVERY
         else:
             error_msg = "I'm sorry, I encountered an issue. Let me try to help you differently."
-            state["current_state"] = ConversationStates.AUTHENTICATED if state["verified"] else ConversationStates.INITIAL
+            state["current_state"] = recovered_state
+            state["messages"].append(AIMessage(content=error_msg))
         
-        state["messages"].append(AIMessage(content=error_msg))
         return interrupt(state)
     
     def route_conversation(self, state: ConversationState) -> ConversationState:
@@ -561,7 +646,7 @@ async def interactive_chat():
                 appointments=[],
                 error_count=0,
                 last_error=None,
-                session_metadata={}
+                session_metadata={"last_message_read": 0}
             )
             state["messages"].append(HumanMessage(content=user_input))
             # Process message
@@ -569,12 +654,21 @@ async def interactive_chat():
             state = result["__interrupt__"][-1].value
         else:
             state["messages"].append(HumanMessage(content=user_input))
+            state["session_metadata"]["last_message_read"] += 1
             # Resume the state machine from the last state
             result = await agent.graph.ainvoke(state, config=thread_config)
-            state = result["__interrupt__"][-1].value
+            if "__interrupt__" in result:
+                state = result["__interrupt__"][-1].value
+            else:
+                state = result
         # Print the latest AI message
-        ai_message = state["messages"][-1].content
-        print(f"Agent: {ai_message}")
+        last_message_read = state["session_metadata"]["last_message_read"]
+        for i in range(last_message_read, len(state["messages"])):
+            if isinstance(state["messages"][i], AIMessage):
+                ai_message = state["messages"][i].content
+                print(f"Agent: {ai_message}")
+
+        state["session_metadata"]["last_message_read"] = len(state["messages"]) - 1
         if state["current_state"] == ConversationStates.END_CONVERSATION:
             break
 
