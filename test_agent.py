@@ -53,20 +53,7 @@ async def interactive_chat():
         user_input = input("You: ")
         # If this is the first message, prompt the user
         if state is None:
-            state = ConversationState(
-                messages=[],
-                current_state=ConversationStates.INITIAL,
-                verified=False,
-                patient_id=None,
-                verification_attempts=0,
-                verification_data={},
-                pending_action=None,
-                selected_appointment_id=None,
-                appointments=[],
-                error_count=0,
-                last_error=None,
-                session_metadata={"last_message_read": 0}
-            )
+            state = agent.get_initial_state()
             state["messages"].append(HumanMessage(content=user_input))
             # Process message
             result = await agent.graph.ainvoke(state, config=thread_config)
@@ -74,8 +61,6 @@ async def interactive_chat():
                 state = result["__interrupt__"][-1].value
             else:
                 state = result
-            if state["current_state"] == ConversationStates.END_CONVERSATION:
-                break
         else:
             state["messages"].append(HumanMessage(content=user_input))
             state["session_metadata"]["last_message_read"] += 1

@@ -149,6 +149,22 @@ class HealthcareConversationAgent:
             }
         )
 
+    @staticmethod
+    def get_initial_state():
+        return ConversationState(
+            messages=[],
+            current_state=ConversationStates.INITIAL,
+            verified=False,
+            patient_id=None,
+            verification_attempts=0,
+            verification_data={},
+            pending_action=None,
+            selected_appointment_id=None,
+            appointments=[],
+            last_error=None,
+            session_metadata={"last_message_read": 0}
+        )
+
     # This handles the initial state and has 3 responsibilities:
     # 1. Respond to the user's initial message and inform them of the verification requirements
     # 2. Immediately send the user to the verification state if they've provided their verification information in their first message
@@ -304,7 +320,6 @@ class HealthcareConversationAgent:
             # Clear verified information from state for security
             state["verification_data"] = {}
             pending_action =state["pending_action"]
-                
             welcome_msg = "Great! I've verified your identity."
             if not pending_action:
                 welcome_msg += " I can help you with:\n"
@@ -427,7 +442,6 @@ class HealthcareConversationAgent:
     # Seaches for a selected appointment and performs the action.
     async def _handle_appointment_action(self, state: ConversationState, action: PendingActions) -> ConversationState:
         """Generic handler for appointment actions"""
-        
         last_message = state["messages"][-1]
         user_input = last_message.content if isinstance(last_message, HumanMessage) else ""
 
