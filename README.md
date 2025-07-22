@@ -6,7 +6,7 @@ This is a chat agent that can list, confirm, or cancel appointments.
 
 The chat can currently be run in the `test_agent.py` file. After a language model and the `HealthcareConversationAgent` are initialized,
 the user interact through a `while True` loop. The loop returns the new state of the conversation, including the AI's new responses in the
-chat history.
+chat history. You will need an `OPENAI_API_KEY` or for slightly reduced chat intelligence `GROQ_API_KEY`
 
 The chat can also be run as a server in `server.py` from the `/chat` endpoint. To run locally,
 run `uvicorn server:app --reload`. Then make requests containing a user_id and message to the `/chat` endpoint.
