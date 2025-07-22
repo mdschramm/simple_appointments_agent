@@ -24,7 +24,7 @@
   <button onclick="sendMessage()">Send</button>
 
   <script>
-    const userId = "demo_user";
+    let userId = "";
     const chatBox = document.getElementById("chat-box");
 
     async function sendMessage() {
@@ -47,6 +47,9 @@
       }
 
       const data = await response.json();
+      if (!userId) {
+        userId = data.user_id;
+      }
       data.ai_messages.forEach(msg => {
         appendMessage("Assistant", msg, "ai");
       });

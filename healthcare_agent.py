@@ -216,7 +216,9 @@ class HealthcareConversationAgent:
         Your entire response should be a JSON object in the following format: {{\"message\": \"<your main response>\", \"pending_action\": {PendingActions}, \"verification_provided\": {bool}}}
         and based on the user_input.
         
-        If the user provides verification information then verification_provided should be set to true, otherwise false. 
+        If the user provides any of their verification information(full name, phone number, or date of birth) 
+        then verification_provided should be set to true even if the user hasn't provided everything they need.
+        If there is no verification information anywhere in the message, verification_provided should be set to false. 
         If they've specified confirming, listing/viewing, or cancelling appointments then pending_action should be set to that action.
         Finally if you're unsure, put unsure for pending_action.
         Remember to only respond with END if the user wants to end the conversation.
@@ -260,11 +262,11 @@ class HealthcareConversationAgent:
         - Phone number (various formats acceptable)  
         - Date of birth (MM/DD/YYYY, YYYY-MM-DD, or similar formats)
         
-        For each piece of information found, call the extract_verification_info tool with the field name {PII_FIELDS} and the value.
         For dates, please convert to YYYY-MM-DD format.
         Here is information that the user has already provided: "{state['verification_data']}"
-        Be conversational and let the user know if inputs are missing or malformed. Remember to only respond with END and no other text 
-        if the user wants to end the conversation.
+        Here is the list of all of the information fields required: {PII_FIELDS}
+        For each piece of information found, call the extract_verification_info tool with the field name {PII_FIELDS} and the value.
+        Remember to only respond with END and no other text if the user wants to end the conversation.
         """
         
         response = await self.llm.bind_tools(self.tools).ainvoke([
@@ -285,9 +287,9 @@ class HealthcareConversationAgent:
                         state["verification_data"] = {**state["verification_data"], **extracted_info_result["data"]}
 
             if len(state["verification_data"]) != len(PII_FIELDS):
-                message = "I don't have all the information I need to verify your identity. So far you've provided: "
+                message = "I don't have all the information I need to verify your identity. So far you've provided:\n"
                 message += ", ".join([key.replace("_", " ") for key in state["verification_data"].keys() if key in PII_FIELDS])
-                message += "\nPlease provide the missing information: "
+                message += ".\nPlease provide the missing information:\n"
                 message += ", ".join([key.replace("_", " ") for key in PII_FIELDS if key not in state["verification_data"].keys()])
                 state["messages"].append(AIMessage(content=message))
                 return interrupt(state)
