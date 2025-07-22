@@ -80,6 +80,10 @@ This class passes state around to each handler function and back to the user. Ha
 functions have full control over the routing by setting "current_state" to the next state
 based on it's handling of user input.
 
+Here is an outline of the intended state machine (currently verification node cannot flow directly to list/confirm/cancel nodes):
+
+![state_machine](images/state_machine.drawio.png)
+
 ## Technologies
 
 - Langchain
