@@ -1,0 +1,73 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <title>Healthcare Chat</title>
+  <style>
+    body { font-family: Arial, sans-serif; padding: 1rem; }
+    #chat-box { border: 1px solid #ccc; padding: 1rem; height: 400px; overflow-y: auto; }
+    #user-input {
+    width: 80%;
+    height: 3rem;
+    font-size: 1.1rem;
+    padding: 0.5rem;
+    box-sizing: border-box;
+  }
+    .user { color: blue; }
+    .ai { color: green; }
+  </style>
+</head>
+<body>
+  <h1>Healthcare Assistant</h1>
+  <div id="chat-box"></div>
+  <input type="text" id="user-input" placeholder="Type your message..." />
+  <button onclick="sendMessage()">Send</button>
+
+  <script>
+    const userId = "demo_user";
+    const chatBox = document.getElementById("chat-box");
+
+    async function sendMessage() {
+      const input = document.getElementById("user-input");
+      const message = input.value;
+      if (!message) return;
+
+      appendMessage("You", message, "user");
+      input.value = "";
+
+      const response = await fetch("http://localhost:8000/chat", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ user_id: userId, message }),
+      });
+
+      if (!response.ok) {
+        appendMessage("System", "Error sending message.", "error");
+        return;
+      }
+
+      const data = await response.json();
+      data.ai_messages.forEach(msg => {
+        appendMessage("Assistant", msg, "ai");
+      });
+    }
+
+    function appendMessage(sender, message, cls) {
+      const msg = document.createElement("div");
+      msg.className = cls;
+      msg.textContent = `${sender}: ${message}`;
+      chatBox.appendChild(msg);
+      chatBox.scrollTop = chatBox.scrollHeight;
+    }
+
+    const input = document.getElementById("user-input");
+
+    input.addEventListener("keydown", function (event) {
+      if (event.key === "Enter") {
+        event.preventDefault(); // prevent default form submission/line break
+        sendMessage();
+      }
+    });
+  </script>
+</body>
+</html>

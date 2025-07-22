@@ -6,6 +6,10 @@ from dotenv import load_dotenv
 from healthcare_agent import HealthcareConversationAgent, ConversationStates
 from langchain_openai import ChatOpenAI
 from langchain_core.messages import HumanMessage, AIMessage
+from fastapi.staticfiles import StaticFiles
+from pathlib import Path
+from fastapi.responses import HTMLResponse
+
 
 load_dotenv()
 
@@ -121,3 +125,13 @@ async def chat(request: ChatRequest):
 @app.get("/")
 def root():
     return {"status": "ok", "message": "Healthcare Agent FastAPI server running."}
+
+
+# Mount static directory
+app.mount("/static", StaticFiles(directory="static"), name="static")
+
+# Serve the HTML page
+@app.get("/chat-ui", response_class=HTMLResponse)
+def chat_ui():
+    html_path = Path("static/index.html")
+    return HTMLResponse(content=html_path.read_text(), status_code=200)
