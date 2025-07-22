@@ -428,6 +428,7 @@ class HealthcareConversationAgent:
         else:
             state["current_state"] = ConversationStates.ERROR_RECOVERY
             state["last_error"] = "Failed to fetch appointments"
+            state["messages"].append(AIMessage(content="I'm sorry, I've encountered an issue, can you rephrase your request?"))
         
         return interrupt(state)
     
@@ -458,10 +459,11 @@ class HealthcareConversationAgent:
         if selected_appointment:
             # Perform the action
             if action == "confirm":
-                result = await confirm_patient_appointment.ainvoke({"appointment_id": selected_appointment["id"]})
+                result = await confirm_patient_appointment.ainvoke({"appointment_id": selected_appointment["id"],
+                "patient_id": state["patient_id"]})
                 action_word = "confirmed"
             else:  # cancel
-                result = await cancel_patient_appointment.ainvoke({"appointment_id": selected_appointment["id"]})
+                result = await cancel_patient_appointment.ainvoke({"appointment_id": selected_appointment["id"], "patient_id": state["patient_id"]})
                 action_word = "cancelled"
 
             # Clear pending action

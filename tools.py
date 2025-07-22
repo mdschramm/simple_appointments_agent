@@ -40,15 +40,16 @@ async def fetch_appointments(patient_id: str) -> Dict[str, Any]:
         return {"success": False, "appointments": [], "message": f"Error fetching appointments: {str(e)}"}
 
 @tool
-async def confirm_patient_appointment(appointment_id: str) -> Dict[str, Any]:
+async def confirm_patient_appointment(appointment_id: str, patient_id: str) -> Dict[str, Any]:
     """
     Confirm a specific appointment
     
     Args:
         appointment_id: The ID of the appointment to confirm
+        patient_id: The ID of the patient
     """
     try:
-        success = await MockAppointmentService.confirm_appointment(appointment_id)
+        success = await MockAppointmentService.confirm_appointment(appointment_id, patient_id)
         return {
             "success": success,
             "message": "Appointment confirmed successfully" if success else "Failed to confirm appointment"
@@ -57,15 +58,16 @@ async def confirm_patient_appointment(appointment_id: str) -> Dict[str, Any]:
         return {"success": False, "message": f"Error confirming appointment: {str(e)}"}
 
 @tool
-async def cancel_patient_appointment(appointment_id: str) -> Dict[str, Any]:
+async def cancel_patient_appointment(appointment_id: str, patient_id: str) -> Dict[str, Any]:
     """
     Cancel a specific appointment
     
     Args:
         appointment_id: The ID of the appointment to cancel
+        patient_id: The ID of the patient
     """
     try:
-        success = await MockAppointmentService.cancel_appointment(appointment_id)
+        success = await MockAppointmentService.cancel_appointment(appointment_id, patient_id)
         return {
             "success": success,
             "message": "Appointment cancelled successfully" if success else "Failed to cancel appointment"
