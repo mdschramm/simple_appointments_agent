@@ -31,6 +31,8 @@ Response:
 }
 ```
 
+This is also deployed on https://simple-appointments-agent.onrender.com - however it may be quite slow.
+
 ## Storage of User Data
 
 Currently user data is hard-coded in memory.
