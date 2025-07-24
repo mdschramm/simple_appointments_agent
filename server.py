@@ -53,13 +53,14 @@ def get_chat_model():
 # Create agent instance (stateless, but can reuse chain)
 llm = get_chat_model()
 
-async def update_state(state: ConversationState, user_message: str, agent: HealthcareConversationAgent, thread_config: dict) -> ConversationState:
+async def update_state(state: ConversationState, user_message: str, agent: HealthcareConversationAgent) -> ConversationState:
     # Append user message
     state["messages"].append(HumanMessage(content=user_message))
     state["session_metadata"]["last_message_read"] += 1
     
     # Resume the state machine from the last state
-    result = await agent.graph.ainvoke(state, config=thread_config)
+    # result = await agent.graph.ainvoke(state, config=thread_config)
+    result = await agent.graph.ainvoke(state)
     if "__interrupt__" in result:
         state = result["__interrupt__"][-1].value
     else:
@@ -79,8 +80,8 @@ async def chat(request: ChatRequest):
         user_id = uuid.uuid4().hex
         user_state = HealthcareConversationAgent.get_initial_state()
         agent = HealthcareConversationAgent(llm_chat=llm)
-        thread_config = {"configurable": {"thread_id": user_id}}
-        user_session = {"state": user_state, "agent": agent, "thread_config": thread_config}
+        # thread_config = {"configurable": {"thread_id": user_id}}
+        user_session = {"state": user_state, "agent": agent}
         user_sessions[user_id] = user_session
 
         # Append user message
@@ -97,9 +98,9 @@ async def chat(request: ChatRequest):
     else:
         user_state = user_session["state"]
         agent = user_session["agent"]
-        thread_config = user_session["thread_config"]
+        # thread_config = user_session["thread_config"]
         # Append user message
-        user_state = await update_state(user_state, user_message, agent, thread_config)
+        user_state = await update_state(user_state, user_message, agent)
         user_session["state"] = user_state
         
         if user_state["current_state"] == ConversationStates.END_CONVERSATION:
