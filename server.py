@@ -3,7 +3,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from dotenv import load_dotenv
-from healthcare_agent import HealthcareConversationAgent, ConversationStates
+from healthcare_agent import HealthcareConversationAgent, ConversationStates, ConversationState
 from langchain_openai import ChatOpenAI
 from langchain_core.messages import HumanMessage, AIMessage
 from fastapi.staticfiles import StaticFiles
@@ -53,6 +53,19 @@ def get_chat_model():
 # Create agent instance (stateless, but can reuse chain)
 llm = get_chat_model()
 
+async def update_state(state: ConversationState, user_message: str, agent: HealthcareConversationAgent, thread_config: dict) -> ConversationState:
+    # Append user message
+    state["messages"].append(HumanMessage(content=user_message))
+    state["session_metadata"]["last_message_read"] += 1
+    
+    # Resume the state machine from the last state
+    result = await agent.graph.ainvoke(state, config=thread_config)
+    if "__interrupt__" in result:
+        state = result["__interrupt__"][-1].value
+    else:
+        state = result
+    return state
+
 # Async chat endpoint (single endpoint, resets session on end)
 @app.post("/chat", response_model=ChatResponse)
 async def chat(request: ChatRequest):
@@ -62,6 +75,7 @@ async def chat(request: ChatRequest):
     # Retrieve or initialize conversation state
     user_session = user_sessions.get(user_id)
     if not user_session:
+        # initialize user session
         user_id = uuid.uuid4().hex
         user_state = HealthcareConversationAgent.get_initial_state()
         agent = HealthcareConversationAgent(llm_chat=llm)
@@ -70,12 +84,7 @@ async def chat(request: ChatRequest):
         user_sessions[user_id] = user_session
 
         # Append user message
-        user_state["messages"].append(HumanMessage(content=user_message))
-        result = await agent.graph.ainvoke(user_state, config=thread_config)
-        if "__interrupt__" in result:
-            user_state = result["__interrupt__"][-1].value
-        else:
-            user_state = result
+        user_state = await update_state(user_state, user_message, agent, thread_config)
         user_session["state"] = user_state
         if user_state["current_state"] == ConversationStates.END_CONVERSATION:
             del user_sessions[user_id]
@@ -90,15 +99,7 @@ async def chat(request: ChatRequest):
         agent = user_session["agent"]
         thread_config = user_session["thread_config"]
         # Append user message
-        user_state["messages"].append(HumanMessage(content=user_message))
-        user_state["session_metadata"]["last_message_read"] += 1
-        
-        # Resume the state machine from the last state
-        result = await agent.graph.ainvoke(user_state, config=thread_config)
-        if "__interrupt__" in result:
-            user_state = result["__interrupt__"][-1].value
-        else:
-            user_state = result
+        user_state = await update_state(user_state, user_message, agent, thread_config)
         user_session["state"] = user_state
         
         if user_state["current_state"] == ConversationStates.END_CONVERSATION:
@@ -111,7 +112,8 @@ async def chat(request: ChatRequest):
             )
 
     # Track unread AI messages
-    last_message_read = user_state["session_metadata"].get("last_message_read", 0)
+    FALLBACK_MESSAGE_INDEX = 0
+    last_message_read = user_state["session_metadata"].get("last_message_read", FALLBACK_MESSAGE_INDEX)
     new_ai_messages = [
         msg.content for msg in user_state["messages"][last_message_read:]
         if isinstance(msg, AIMessage)

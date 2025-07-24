@@ -162,7 +162,7 @@ class HealthcareConversationAgent:
             selected_appointment_id=None,
             appointments=[],
             last_error=None,
-            session_metadata={"last_message_read": 0}
+            session_metadata={"last_message_read": -1} # Set to -1 to indicate no message has been read
         )
 
     # This handles the initial state and has 3 responsibilities:
