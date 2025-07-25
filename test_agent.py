@@ -55,6 +55,7 @@ async def interactive_chat():
         if state is None:
             state = agent.get_initial_state()
             state["messages"].append(HumanMessage(content=user_input))
+            state["session_metadata"]["last_message_read"] += 1
             # Process message
             result = await agent.graph.ainvoke(state, config=thread_config)
             if "__interrupt__" in result:
