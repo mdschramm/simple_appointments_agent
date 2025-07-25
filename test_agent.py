@@ -44,7 +44,6 @@ def get_chat_model():
 async def interactive_chat():
     llm = get_chat_model()
     agent = HealthcareConversationAgent(llm)
-    thread_config = {"configurable": {"thread_id": "some_id"}}
     state = None
     print("🏥 Healthcare Agent Test")
     print("=" * 30)
@@ -59,7 +58,7 @@ async def interactive_chat():
         state["messages"].append(HumanMessage(content=user_input))
         state["session_metadata"]["last_message_read"] += 1
         # Resume the state machine from the last state
-        result = await agent.graph.ainvoke(state, config=thread_config)
+        result = await agent.graph.ainvoke(state)
         if "__interrupt__" in result:
             state = result["__interrupt__"][-1].value
         else:

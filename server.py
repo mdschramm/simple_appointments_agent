@@ -70,6 +70,9 @@ async def update_state(state: ConversationState, user_message: str, agent: Healt
 # Async chat endpoint (single endpoint, resets session on end)
 @app.post("/chat", response_model=ChatResponse)
 async def chat(request: ChatRequest):
+
+    END_MESSAGE = "It was good chatting!"
+    # Generate a random user ID if none provided
     user_id = request.user_id
     user_message = request.message
 
@@ -79,26 +82,25 @@ async def chat(request: ChatRequest):
         # initialize user session
         user_id = uuid.uuid4().hex
         user_state = HealthcareConversationAgent.get_initial_state()
+        user_state["session_metadata"]["last_message_read"] += 1
         agent = HealthcareConversationAgent(llm_chat=llm)
-        # thread_config = {"configurable": {"thread_id": user_id}}
         user_session = {"state": user_state, "agent": agent}
         user_sessions[user_id] = user_session
 
         # Append user message
-        user_state = await update_state(user_state, user_message, agent, thread_config)
+        user_state = await update_state(user_state, user_message, agent)
         user_session["state"] = user_state
         if user_state["current_state"] == ConversationStates.END_CONVERSATION:
             del user_sessions[user_id]
             return ChatResponse(
                 user_id=user_id,
-                ai_messages=["It was nice talking to you!",],
+                ai_messages=[END_MESSAGE],
                 state=user_state["current_state"],
                 end=True
             )
     else:
         user_state = user_session["state"]
         agent = user_session["agent"]
-        # thread_config = user_session["thread_config"]
         # Append user message
         user_state = await update_state(user_state, user_message, agent)
         user_session["state"] = user_state
@@ -107,7 +109,7 @@ async def chat(request: ChatRequest):
             del user_sessions[user_id]
             return ChatResponse(
                 user_id=user_id,
-                ai_messages=["It was nice talking to you!",],
+                ai_messages=[END_MESSAGE],
                 state=user_state["current_state"],
                 end=True
             )
@@ -119,7 +121,7 @@ async def chat(request: ChatRequest):
         msg.content for msg in user_state["messages"][last_message_read:]
         if isinstance(msg, AIMessage)
     ]
-    user_state["session_metadata"]["last_message_read"] = len(user_state["messages"])
+    user_state["session_metadata"]["last_message_read"] = len(user_state["messages"]) - 1
 
     end = user_state["current_state"] == ConversationStates.END_CONVERSATION
     if end:

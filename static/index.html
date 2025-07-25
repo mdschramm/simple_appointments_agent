@@ -27,6 +27,11 @@
     let userId = "";
     const chatBox = document.getElementById("chat-box");
 
+    window.onload = function() {
+      const welcomeMessage = "Hello! I'm an appointment management assistant that can help you list, confirm, and cancel your healthcare appointments. You'll first need to provide your full name, phone number, and date of birth to verify your identity before I can assist you.";
+      appendMessage("Healthcare Assistant", welcomeMessage, "ai");
+    };
+
     async function sendMessage() {
       const input = document.getElementById("user-input");
       const message = input.value;

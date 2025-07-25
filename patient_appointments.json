@@ -1,30 +1,30 @@
 {
-    "patient_123": [
-        {
-            "id": "appt_001",
-            "datetime": "2025-07-25 10:00:00",
-            "provider": "Dr. Smith",
-            "type": "Annual Checkup",
-            "status": "confirmed",
-            "location": "Main Clinic"
-        },
-        {
-            "id": "appt_002",
-            "datetime": "2025-08-15 14:30:00",
-            "provider": "Dr. Jones",
-            "type": "Follow-up",
-            "status": "confirmed",
-            "location": "Cardiology Wing"
-        }
-    ],
-    "patient_456": [
-        {
-            "id": "appt_003",
-            "datetime": "2025-08-01 10:00:00",
-            "provider": "Dr. Gordon",
-            "type": "Consultation",
-            "status": "scheduled",
-            "location": "Endocrinology Wing"
-        }
-    ]
+  "patient_123": [
+    {
+      "id": "appt_001",
+      "datetime": "2025-07-25 10:00:00",
+      "provider": "Dr. Smith",
+      "type": "Annual Checkup",
+      "status": "scheduled",
+      "location": "Main Clinic"
+    },
+    {
+      "id": "appt_002",
+      "datetime": "2025-08-15 14:30:00",
+      "provider": "Dr. Jones",
+      "type": "Follow-up",
+      "status": "scheduled",
+      "location": "Cardiology Wing"
+    }
+  ],
+  "patient_456": [
+    {
+      "id": "appt_003",
+      "datetime": "2025-08-01 10:00:00",
+      "provider": "Dr. Gordon",
+      "type": "Consultation",
+      "status": "scheduled",
+      "location": "Endocrinology Wing"
+    }
+  ]
 }
