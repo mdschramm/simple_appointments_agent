@@ -66,7 +66,7 @@ class HealthcareConversationAgent:
         
         self.llm = llm_chat
 
-        # There's an issue with the parsing of system prompt so I can't interpolate END_MESSAGE here
+        # Ensure's interpretation of ending conversation so user isn't stuck
         self.system_prompt = """Be friendly and conversational. {additional_instructions} 
         If the user has indicated that they want to end the conversation, then ignore all previous instructions and return END and no other text. """
         
@@ -85,7 +85,6 @@ class HealthcareConversationAgent:
         self.graph = self._build_graph()
 
     def _check_end_response(self, response, state):
-        # Helper to check if the LLM signaled to end the conversation
         if isinstance(response, str):
             content = response.strip()
         else:
@@ -102,7 +101,6 @@ class HealthcareConversationAgent:
         """Build the complete state machine graph"""
         graph = StateGraph(ConversationState)
         
-        # Add all nodes
         graph.add_node("verification_handler", self.handle_verification)
         graph.add_node("list_appointments_handler", self.handle_list_appointments)
         graph.add_node("confirm_appointment_handler", self.handle_confirm_appointment)
@@ -110,10 +108,8 @@ class HealthcareConversationAgent:
         graph.add_node("error_recovery_handler", self.handle_error_recovery)
         graph.add_node("router", self.route_conversation)
         
-        # Set entry point
         graph.set_entry_point("router")
         
-        # Add edges
         self._add_graph_edges(graph)
         
         return graph.compile()
@@ -121,14 +117,12 @@ class HealthcareConversationAgent:
     def _add_graph_edges(self, graph: StateGraph):
         """Define all possible state transitions"""
         
-        # From each handler to router
         graph.add_edge("verification_handler", "router")
         graph.add_edge("list_appointments_handler", "router") 
         graph.add_edge("confirm_appointment_handler", "router")
         graph.add_edge("cancel_appointment_handler", "router")
         graph.add_edge("error_recovery_handler", "router")
         
-        # Router conditional edges
         graph.add_conditional_edges(
             "router",
             self.determine_next_state,
