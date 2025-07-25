@@ -49,28 +49,22 @@ async def interactive_chat():
     state = None
     print("🏥 Healthcare Agent Test")
     print("=" * 30)
+    state = agent.get_initial_state()
+    state["messages"].append(AIMessage(content="""Hello! I'm an appointment management assistant that can help you
+    list, confirm, and cancel your healthcare appointments. You'll first need to provide your full name, phone number, and date of
+    birth to verify your identity before I can assist you."""))
+    print(f"Agent: {state['messages'][0].content}")
+    state["session_metadata"]["last_message_read"] += 1
     while True:
         user_input = input("You: ")
-        # If this is the first message, prompt the user
-        if state is None:
-            state = agent.get_initial_state()
-            state["messages"].append(HumanMessage(content=user_input))
-            state["session_metadata"]["last_message_read"] += 1
-            # Process message
-            result = await agent.graph.ainvoke(state, config=thread_config)
-            if "__interrupt__" in result:
-                state = result["__interrupt__"][-1].value
-            else:
-                state = result
+        state["messages"].append(HumanMessage(content=user_input))
+        state["session_metadata"]["last_message_read"] += 1
+        # Resume the state machine from the last state
+        result = await agent.graph.ainvoke(state, config=thread_config)
+        if "__interrupt__" in result:
+            state = result["__interrupt__"][-1].value
         else:
-            state["messages"].append(HumanMessage(content=user_input))
-            state["session_metadata"]["last_message_read"] += 1
-            # Resume the state machine from the last state
-            result = await agent.graph.ainvoke(state, config=thread_config)
-            if "__interrupt__" in result:
-                state = result["__interrupt__"][-1].value
-            else:
-                state = result
+            state = result
         # Print the latest AI message
         last_message_read = state["session_metadata"]["last_message_read"]
         for i in range(last_message_read, len(state["messages"])):

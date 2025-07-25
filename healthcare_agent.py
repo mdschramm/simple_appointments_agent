@@ -27,7 +27,7 @@ class PendingActions(str, Enum):
     LIST = "list"
     CONFIRM = "confirm"
     CANCEL = "cancel"
-    UNSURE = "unsure"
+    NONE = "none"
 
 class ConversationStates(str, Enum):
     INITIAL = "initial"
@@ -45,6 +45,7 @@ class ConversationStates(str, Enum):
 class ConversationState(TypedDict):
     """Complete conversation state with all necessary tracking"""
     messages: Annotated[List[BaseMessage], "conversation history"]
+    last_user_message: Optional[HumanMessage]
     current_state: ConversationStates
     verified: bool
     patient_id: Optional[str]
@@ -153,6 +154,7 @@ class HealthcareConversationAgent:
     def get_initial_state():
         return ConversationState(
             messages=[],
+            last_user_message=None,
             current_state=ConversationStates.INITIAL,
             verified=False,
             patient_id=None,
@@ -250,8 +252,8 @@ class HealthcareConversationAgent:
     # This function handles user verification, it attempts to iteratively extract name, phone and dob from the user
     # It will only return, allowing handle_verification to proceed, if all 3 pieces of information have been extracted
     async def _extract_verification_info(self, state: ConversationState) -> ConversationState:
-        last_message = state["messages"][-1]
-        user_input = last_message.content if isinstance(last_message, HumanMessage) else ""
+        # last_message = state["messages"][-1]
+        user_input = state["last_user_message"]
         
         # Try to extract and verify information
         verification_prompt = f"""
@@ -274,8 +276,8 @@ class HealthcareConversationAgent:
             {"role": "user", "content": user_input}
         ])
 
-        if self._check_end_response(response, state):
-            return state
+        # if self._check_end_response(response, state):
+        #     return state
 
         # Check if LLM called verification tool
         if response.tool_calls:
@@ -582,11 +584,104 @@ class HealthcareConversationAgent:
         return interrupt(state)
 
     
-    def route_conversation(self, state: ConversationState) -> ConversationState:
-        """Router node - pass-through for conditional routing"""
+    async def route_conversation(self, state: ConversationState) -> ConversationState:
+        """Router node - conditional routing logic centralized here"""
+        
+        # If there's an error, proceed immediately to error recovery
+        if state["current_state"] == ConversationStates.ERROR_RECOVERY:
+            return state
+
+        # If the user is verified and there's a pending action, navigate to that state
+        if state["verified"]:
+            if state["pending_action"] == PendingActions.LIST:
+                state["current_state"] = ConversationStates.LIST_APPOINTMENTS
+            elif state["pending_action"] == PendingActions.CONFIRM:
+                state["current_state"] = ConversationStates.CONFIRM_APPOINTMENT
+            elif state["pending_action"] == PendingActions.CANCEL:
+                state["current_state"] = ConversationStates.CANCEL_APPOINTMENT
+            return state
+
+        # Iterate through messages in reverse order to find the last user message
+        user_input = None
+        for message in state["messages"][::-1]:
+            if isinstance(message, HumanMessage):
+                user_input = message.content
+                state["last_user_message"] = user_input
+                break
+        
+
+        VERIFICATION_PROVIDED = "verification_provided"
+        REQUESTED_ACTION = "requested_action"
+        INFORMATION_REQUESTED = "information_requested"
+        instruction = f"""
+        Based on the user's last message: {user_input}
+        If the user indicates that they want to end the conversation and they don't provide any other information or indicate any appointment actions, thn return END and no other text. Otherwise:
+
+        Return a JSON object of the following format:
+        {{"{VERIFICATION_PROVIDED}": {bool}, "{REQUESTED_ACTION}": "{PendingActions.LIST.value}/{PendingActions.CONFIRM.value}/{PendingActions.CANCEL.value}/{PendingActions.NONE.value}", "{INFORMATION_REQUESTED}": {bool}}}
+
+        If the user provides any of their verification information(full name, phone number, and/or date of birth) 
+        then {VERIFICATION_PROVIDED} should be set to true even if the user hasn't provided everything they need.
+
+        If there is no verification information anywhere in the message, {VERIFICATION_PROVIDED} should be set to false.
+
+        If in their message they've indicated that they want to list/view/see their appointments, then {REQUESTED_ACTION} should be set to "{PendingActions.LIST.value}".
+        If in their message they've indicated that they want to confirm an appointment, then {REQUESTED_ACTION} should be set to "{PendingActions.CONFIRM.value}".
+        If in their message they've indicated that they want to cancel an appointment, then {REQUESTED_ACTION} should be set to "{PendingActions.CANCEL.value}".
+        If they haven't indicated any of the above actions then {REQUESTED_ACTION} should be set to "{PendingActions.NONE.value}".
+
+        If the user has asked about which actions they can perform in this chat, then set {INFORMATION_REQUESTED} to true. Otherwise, set {INFORMATION_REQUESTED} to false.
+
+        Remember that the user may refer to other messages in chat history to indicate what they want to do, so use that context when you are unsure just from the user's last message.
+        """
+        response = await self.chain.ainvoke({
+            "additional_instructions": instruction, 
+            "chat_history": state["messages"]})
+        
+        # End immediately if the user wants to end
+        if self._check_end_response(response, state):
+            state["current_state"] = ConversationStates.END_CONVERSATION
+            return state
+
+        # Parse json response content string
+        try:
+            response_json = json.loads(response.content)
+
+            if response_json["information_requested"]:
+                msg = "I can help you list, confirm, and cancel your healthcare appointments."
+                if not state["verified"] and not response_json["verification_provided"]:
+                    msg += " You'll need to first provide your full name, phone number and date of birth before I can assist you."
+                state["messages"].append(AIMessage(content=msg))
+
+            if not state["verified"]:
+                state["current_state"] = ConversationStates.VERIFICATION
+                state["pending_action"] = response_json["requested_action"]
+                return state
+
+            if response_json["verification_provided"]:
+                state["messages"].append(AIMessage(content=f"""You've already verified your identity with 
+                full name {state['verification_info']['full_name']}, 
+                phone number {state['verification_info']['phone_number']}, 
+                and date of birth {state['verification_info']['date_of_birth']}.
+                If you'd like to manage appointments for another account, please end this conversation and start a new one.
+                """))
+
+            if response_json["requested_action"] == PendingActions.LIST:
+                state["current_state"] = ConversationStates.LIST_APPOINTMENTS
+            elif response_json["requested_action"] == PendingActions.CONFIRM:
+                state["current_state"] = ConversationStates.CONFIRM_APPOINTMENT
+            elif response_json["requested_action"] == PendingActions.CANCEL:
+                state["current_state"] = ConversationStates.CANCEL_APPOINTMENT
+            elif response_json["requested_action"] == PendingActions.NONE:
+                state["current_state"] = ConversationStates.AUTHENTICATED
+
+        except json.JSONDecodeError:
+            state["current_state"] = ConversationStates.ERROR_RECOVERY
+            return state
+
         return state
     
-    def determine_next_state(self, state: ConversationState) -> ConversationStates:
-        """Determine the next state based on current conversation state"""
+    async def determine_next_state(self, state: ConversationState) -> ConversationStates:
+        """Pass current_state key through to determine next node"""
         return state["current_state"]
     
