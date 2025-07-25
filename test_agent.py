@@ -32,7 +32,6 @@ def get_chat_model():
     open_ai_api_key = os.environ.get("OPENAI_API_KEY")
     if not open_ai_api_key:
         raise ValueError("OPENAI_API_KEY environment variable not found")
-    print(f"Using OpenAI API key: {open_ai_api_key[:5]}...{open_ai_api_key[-5:] if open_ai_api_key else None}")
     
     llm = ChatOpenAI(
         model="gpt-4.1-mini",
