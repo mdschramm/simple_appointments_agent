@@ -16,8 +16,8 @@ load_dotenv()
 app = FastAPI()
 
 origins = [
-    "http://localhost:8000",  # Local development
-    "https://simple-appointments-agent.onrender.com"  # Your production domain
+    "http://localhost:8000", 
+    "https://simple-appointments-agent.onrender.com"
 ]
 # Allow CORS for local dev
 app.add_middleware(
